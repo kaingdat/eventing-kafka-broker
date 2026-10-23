@@ -1437,7 +1437,7 @@ func TestReconcileKind(t *testing.T) {
 		{
 			Name: "Consumers in multiple pods, one exists - ready, increase replicas, propagate dead letter sink URI",
 			Objects: []runtime.Object{
-				NewConsumer(2,
+				NewConsumer(3,
 					ConsumerSpec(NewConsumerSpec(
 						ConsumerTopics("t1", "t2"),
 						ConsumerConfigs(
@@ -1497,6 +1497,22 @@ func TestReconcileKind(t *testing.T) {
 						ConsumerPlacement(kafkainternals.PodBind{PodName: "p1", PodNamespace: systemNamespace}),
 					)),
 				),
+				NewConsumer(2,
+					ConsumerFinalizer(),
+					ConsumerSpec(NewConsumerSpec(
+						ConsumerTopics("t1", "t2"),
+						ConsumerConfigs(
+							ConsumerBootstrapServersConfig(ChannelBootstrapServers),
+							ConsumerGroupIDConfig("my.group.id"),
+						),
+						ConsumerDelivery(NewConsumerSpecDelivery(kafkasource.Ordered,
+							NewConsumerSpecDeliveryDeadLetterSink(),
+							ConsumerInitialOffset(kafkasource.OffsetLatest),
+						)),
+						ConsumerVReplicas(1),
+						ConsumerPlacement(kafkainternals.PodBind{PodName: "p2", PodNamespace: systemNamespace}),
+					)),
+				),
 			},
 			WantUpdates: []clientgotesting.UpdateActionImpl{
 				clientgotesting.NewUpdateAction(
@@ -1506,7 +1522,7 @@ func TestReconcileKind(t *testing.T) {
 						Resource: "consumers",
 					},
 					ConsumerNamespace,
-					NewConsumer(2,
+					NewConsumer(3,
 						ConsumerSpec(NewConsumerSpec(
 							ConsumerTopics("t1", "t2"),
 							ConsumerConfigs(
@@ -1517,7 +1533,7 @@ func TestReconcileKind(t *testing.T) {
 								NewConsumerSpecDeliveryDeadLetterSink(),
 								ConsumerInitialOffset(kafkasource.OffsetLatest),
 							)),
-							ConsumerVReplicas(2),
+							ConsumerVReplicas(1),
 							ConsumerPlacement(kafkainternals.PodBind{PodName: "p2", PodNamespace: systemNamespace}),
 						)),
 						ConsumerReady(),
@@ -1567,7 +1583,7 @@ func TestReconcileKind(t *testing.T) {
 		{
 			Name: "Consumers in multiple pods, one exists - ready, increase replicas",
 			Objects: []runtime.Object{
-				NewConsumer(2,
+				NewConsumer(3,
 					ConsumerSpec(NewConsumerSpec(
 						ConsumerTopics("t1", "t2"),
 						ConsumerConfigs(
@@ -1616,27 +1632,17 @@ func TestReconcileKind(t *testing.T) {
 						ConsumerPlacement(kafkainternals.PodBind{PodName: "p1", PodNamespace: systemNamespace}),
 					)),
 				),
-			},
-			WantUpdates: []clientgotesting.UpdateActionImpl{
-				clientgotesting.NewUpdateAction(
-					schema.GroupVersionResource{
-						Group:    kafkainternals.SchemeGroupVersion.Group,
-						Version:  kafkainternals.SchemeGroupVersion.Version,
-						Resource: "consumers",
-					},
-					ConsumerNamespace,
-					NewConsumer(2,
-						ConsumerSpec(NewConsumerSpec(
-							ConsumerTopics("t1", "t2"),
-							ConsumerConfigs(
-								ConsumerBootstrapServersConfig(ChannelBootstrapServers),
-								ConsumerGroupIDConfig("my.group.id"),
-							),
-							ConsumerVReplicas(2),
-							ConsumerPlacement(kafkainternals.PodBind{PodName: "p2", PodNamespace: systemNamespace}),
-						)),
-						ConsumerReady(),
-					),
+				NewConsumer(2,
+					ConsumerFinalizer(),
+					ConsumerSpec(NewConsumerSpec(
+						ConsumerTopics("t1", "t2"),
+						ConsumerConfigs(
+							ConsumerBootstrapServersConfig(ChannelBootstrapServers),
+							ConsumerGroupIDConfig("my.group.id"),
+						),
+						ConsumerVReplicas(1),
+						ConsumerPlacement(kafkainternals.PodBind{PodName: "p2", PodNamespace: systemNamespace}),
+					)),
 				),
 			},
 			WantStatusUpdates: []clientgotesting.UpdateActionImpl{

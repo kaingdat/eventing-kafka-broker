@@ -100,13 +100,15 @@ function data_plane_build_push() {
 function replace_images() {
   local file=$1
 
-  sed -i "s|\${KNATIVE_KAFKA_DISPATCHER_IMAGE}|${KNATIVE_KAFKA_DISPATCHER_IMAGE}|g" "${file}" &&
-    sed -i "s|\${KNATIVE_KAFKA_RECEIVER_IMAGE}|${KNATIVE_KAFKA_RECEIVER_IMAGE}|g" "${file}"
+  # -i.bak works with both GNU and BSD (macOS) sed
+  sed -i.bak "s|\${KNATIVE_KAFKA_DISPATCHER_IMAGE}|${KNATIVE_KAFKA_DISPATCHER_IMAGE}|g" "${file}" &&
+    sed -i.bak "s|\${KNATIVE_KAFKA_RECEIVER_IMAGE}|${KNATIVE_KAFKA_RECEIVER_IMAGE}|g" "${file}" || return $?
 
   # spefying 'runAsUser: 1001' in the source config for loom images
   if [ "$USE_LOOM" == "true" ]; then
-    sed -i "s|runAsNonRoot: true|runAsUser: 1001|g" "${file}"
+    sed -i.bak "s|runAsNonRoot: true|runAsUser: 1001|g" "${file}" || return $?
   fi
+  rm -f "${file}.bak"
 
   return $?
 }
@@ -181,7 +183,8 @@ function data_plane_source_setup() {
 
   ko resolve ${KO_FLAGS} -Rf ${SOURCE_DATA_PLANE_CONFIG_DIR} | LABEL_YAML_CMD >>"${EVENTING_KAFKA_SOURCE_BUNDLE_ARTIFACT}"
 
-  sed -i "s|\${KNATIVE_KAFKA_DISPATCHER_IMAGE}|${KNATIVE_KAFKA_DISPATCHER_IMAGE}|g" "${EVENTING_KAFKA_SOURCE_BUNDLE_ARTIFACT}"
+  sed -i.bak "s|\${KNATIVE_KAFKA_DISPATCHER_IMAGE}|${KNATIVE_KAFKA_DISPATCHER_IMAGE}|g" "${EVENTING_KAFKA_SOURCE_BUNDLE_ARTIFACT}" || return $?
+  rm -f "${EVENTING_KAFKA_SOURCE_BUNDLE_ARTIFACT}.bak"
 
   return $?
 }

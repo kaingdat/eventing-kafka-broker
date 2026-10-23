@@ -46,7 +46,7 @@ public class OrderedConsumerVerticle extends ConsumerVerticle {
 
     private static final Logger logger = LoggerFactory.getLogger(OrderedConsumerVerticle.class);
 
-    private static final long POLLING_MS = 200L;
+    private static final long POLLING_MS = 300L;
     private static final Duration POLLING_TIMEOUT = Duration.ofMillis(1000L);
 
     private final Map<TopicPartition, OrderedAsyncExecutor> recordDispatcherExecutors;
@@ -65,7 +65,7 @@ public class OrderedConsumerVerticle extends ConsumerVerticle {
         final var tokens = context.getMaxPollRecords() * vReplicas;
         if (context.getEgress().getFeatureFlags().getEnableRateLimiter()) {
             this.bucket = new LocalBucketBuilder()
-                    .addLimit(Bandwidth.classic(tokens, Refill.greedy(tokens, Duration.ofSeconds(1))))
+                    .addLimit(Bandwidth.classic(tokens, Refill.intervally(tokens, Duration.ofSeconds(1))))
                     .withSynchronizationStrategy(SynchronizationStrategy.SYNCHRONIZED)
                     .withMillisecondPrecision()
                     .build();
@@ -184,7 +184,7 @@ public class OrderedConsumerVerticle extends ConsumerVerticle {
 
         if (bucket != null) {
             // Once we have new records, we force add them to internal per-partition queues.
-            bucket.forceAddTokens(records.count());
+            bucket.tryConsume(records.count());
         }
 
         // Put records in internal per-partition queues.

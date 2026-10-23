@@ -80,6 +80,9 @@ const (
 
 	kafkaChannelTLSSecretName = "kafka-channel-ingress-server-tls" //nolint:gosec // This is not a hardcoded credential
 	caCertsSecretKey          = "ca.crt"
+
+	subscriptionVReplicaAnnotation = "kafka.eventing.knative.dev/vreplica"
+	deliveryOrderAnnotation        = "kafka.eventing.knative.dev/delivery.order"
 )
 
 var (
@@ -580,6 +583,34 @@ func (r *Reconciler) reconcileSubscribers(ctx context.Context, channel *messagin
 }
 
 func (r *Reconciler) reconcileConsumerGroup(ctx context.Context, channel *messagingv1beta1.KafkaChannel, s *v1.SubscriberSpec, topicName string, bootstrapServers []string, secret *corev1.Secret) (*internalscg.ConsumerGroup, error) {
+	subscriptionAnnotations, err := r.getSubscriptionAnnotations(channel, s)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return nil, fmt.Errorf("failed to extract subscription annotations for subscriber %v: %w", s, err)
+	}
+
+	var vReplicas *int32
+	if r.KafkaFeatureFlags.IsDispatcherRateLimiterEnabled() {
+		if subscriptionAnnotations != nil {
+			if channelVReplicaAnnotationValue, ok := subscriptionAnnotations[subscriptionVReplicaAnnotation]; ok {
+				if vreplicas, err := strconv.Atoi(channelVReplicaAnnotationValue); err == nil && vreplicas > 0 {
+					vReplicasInt32 := int32(vreplicas)
+					vReplicas = &vReplicasInt32
+				}
+			}
+		}
+	}
+
+	// Get delivery ordering from subscription annotation, default to ordered
+	deliveryOrdering := DefaultDeliveryOrder
+	if subscriptionAnnotations != nil {
+		if deliveryOrderingValue, ok := subscriptionAnnotations[deliveryOrderAnnotation]; ok {
+			parsedOrdering, err := deliveryOrderingFromString(deliveryOrderingValue)
+			if err != nil {
+				return nil, fmt.Errorf("invalid delivery order annotation for subscriber %v: %w", s.UID, err)
+			}
+			deliveryOrdering = parsedOrdering
+		}
+	}
 
 	expectedCg := &internalscg.ConsumerGroup{
 		ObjectMeta: metav1.ObjectMeta{
@@ -594,6 +625,7 @@ func (r *Reconciler) reconcileConsumerGroup(ctx context.Context, channel *messag
 			},
 		},
 		Spec: internalscg.ConsumerGroupSpec{
+			Replicas: vReplicas,
 			TopLevelResourceRef: &corev1.ObjectReference{
 				APIVersion: messagingv1beta1.SchemeGroupVersion.String(),
 				Kind:       "KafkaChannel",
@@ -615,7 +647,7 @@ func (r *Reconciler) reconcileConsumerGroup(ctx context.Context, channel *messag
 					}},
 					Delivery: &internalscg.DeliverySpec{
 						DeliverySpec: mergeDeliverySpecs(s.Delivery, channel.Spec.Delivery),
-						Ordering:     DefaultDeliveryOrder,
+						Ordering:     deliveryOrdering,
 					},
 					Subscriber: duckv1.Destination{
 						URI:      s.SubscriberURI,
@@ -651,10 +683,6 @@ func (r *Reconciler) reconcileConsumerGroup(ctx context.Context, channel *messag
 	}
 
 	// TODO: make keda annotation values configurable and maybe unexposed
-	subscriptionAnnotations, err := r.getSubscriptionAnnotations(channel, s)
-	if err != nil && !apierrors.IsNotFound(err) {
-		return nil, fmt.Errorf("failed to extract subscription annotations for subscriber %v: %w", s, err)
-	}
 	expectedCg.Annotations = kedafunc.SetAutoscalingAnnotations(subscriptionAnnotations)
 
 	if secret != nil {
@@ -673,6 +701,8 @@ func (r *Reconciler) reconcileConsumerGroup(ctx context.Context, channel *messag
 		return nil, err
 	}
 	if apierrors.IsNotFound(err) {
+		// Set default replicas to 1 when creating new consumer group
+		expectedCg.Spec.Replicas = pointer.Int32(1)
 		cg, err = r.InternalsClient.InternalV1alpha1().ConsumerGroups(expectedCg.GetNamespace()).Create(ctx, expectedCg, metav1.CreateOptions{})
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return nil, fmt.Errorf("failed to create consumer group %s/%s: %w", expectedCg.GetNamespace(), expectedCg.GetName(), err)
@@ -754,6 +784,19 @@ func (r *Reconciler) getChannelContractResource(ctx context.Context, topic strin
 // consumerGroup returns a consumerGroup name for the given channel and subscription
 func consumerGroup(channel *messagingv1beta1.KafkaChannel, s *v1.SubscriberSpec) string {
 	return fmt.Sprintf("kafka.%s.%s.%s", channel.Namespace, channel.Name, string(s.UID))
+}
+
+// deliveryOrderingFromString converts a string annotation value to DeliveryOrdering.
+// Returns an error if the value is invalid.
+func deliveryOrderingFromString(val string) (kafkasource.DeliveryOrdering, error) {
+	switch strings.ToLower(val) {
+	case string(kafkasource.Ordered):
+		return kafkasource.Ordered, nil
+	case string(kafkasource.Unordered):
+		return kafkasource.Unordered, nil
+	default:
+		return kafkasource.Ordered, fmt.Errorf("invalid annotation %s value: %s. Allowed values [ %q | %q ]", deliveryOrderAnnotation, val, kafkasource.Ordered, kafkasource.Unordered)
+	}
 }
 
 func (r *Reconciler) channelConfigMap() (*corev1.ConfigMap, error) {

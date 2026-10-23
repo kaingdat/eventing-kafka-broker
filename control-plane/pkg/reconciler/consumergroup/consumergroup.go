@@ -290,7 +290,6 @@ func (r *Reconciler) deleteConsumerGroupMetadata(ctx context.Context, cg *kafkai
 }
 
 func (r *Reconciler) reconcileConsumers(ctx context.Context, cg *kafkainternals.ConsumerGroup) error {
-
 	// Get consumers associated with the ConsumerGroup.
 	existingConsumers, err := r.ConsumerLister.Consumers(cg.GetNamespace()).List(labels.SelectorFromSet(cg.Spec.Selector))
 	if err != nil {
@@ -319,14 +318,12 @@ func (r *Reconciler) reconcileConsumers(ctx context.Context, cg *kafkainternals.
 }
 
 func (r *Reconciler) reconcileConsumersInPlacement(ctx context.Context, cg *kafkainternals.ConsumerGroup, pc ConsumersPerPlacement) error {
-
 	placement := *pc.Placement
 	consumers := pc.Consumers
 
-	// Check if there is a consumer for the given placement.
-	if len(consumers) == 0 {
-		return r.createConsumer(ctx, cg, placement)
-	}
+	// Calculate desired number of consumers based on vreplicas
+	// Each vreplica should result in 1 consumer instance
+	desiredConsumerCount := int(placement.VReplicas)
 
 	// Stable sort consumers so that we give consumers different deletion
 	// priorities based on their state (readiness, etc).
@@ -334,52 +331,65 @@ func (r *Reconciler) reconcileConsumersInPlacement(ctx context.Context, cg *kafk
 	// Consumers at the tail of the list are deleted.
 	sort.Stable(kafkainternals.ByReadinessAndCreationTime(consumers))
 
-	for _, c := range consumers[1:] {
-		if err := r.finalizeConsumer(ctx, c); err != nil {
-			return cg.MarkReconcileConsumersFailed("FinalizeConsumer", err)
+	// Delete excess consumers if we have more than desired
+	if len(consumers) > desiredConsumerCount {
+		for _, c := range consumers[desiredConsumerCount:] {
+			if err := r.finalizeConsumer(ctx, c); err != nil {
+				return cg.MarkReconcileConsumersFailed("FinalizeConsumer", err)
+			}
+		}
+		consumers = consumers[:desiredConsumerCount]
+	}
+
+	// Create missing consumers if we have fewer than desired
+	for i := len(consumers); i < desiredConsumerCount; i++ {
+		if err := r.createConsumerWithVReplicas(ctx, cg, placement, 1); err != nil {
+			return err
 		}
 	}
 
-	c := consumers[0]
+	// Update existing consumers to ensure they have vreplicas=1
+	for _, c := range consumers {
+		expectedSpec := kafkainternals.ConsumerSpec{}
+		cg.Spec.Template.Spec.DeepCopyInto(&expectedSpec)
 
-	expectedSpec := kafkainternals.ConsumerSpec{}
-	cg.Spec.Template.Spec.DeepCopyInto(&expectedSpec)
+		// Set vreplicas to 1 for each individual consumer
+		expectedSpec.VReplicas = pointer.Int32(1)
 
-	expectedSpec.VReplicas = pointer.Int32(placement.VReplicas)
+		expectedSpec.OIDCServiceAccountName = cg.Spec.OIDCServiceAccountName
 
-	expectedSpec.OIDCServiceAccountName = cg.Spec.OIDCServiceAccountName
+		expectedSpec.PodBind = &kafkainternals.PodBind{
+			PodName:      placement.PodName,
+			PodNamespace: r.SystemNamespace,
+		}
 
-	if equality.Semantic.DeepDerivative(expectedSpec, c.Spec) {
-		// Consumer is equal to the template.
-		return nil
-	}
+		if equality.Semantic.DeepEqual(expectedSpec, c.Spec) {
+			// Consumer is equal to the expected spec.
+			continue
+		}
 
-	expectedSpec.PodBind = &kafkainternals.PodBind{
-		PodName:      placement.PodName,
-		PodNamespace: r.SystemNamespace,
-	}
+		// Do not modify informer copy.
+		expectedC := &kafkainternals.Consumer{
+			TypeMeta:   c.TypeMeta,
+			ObjectMeta: c.ObjectMeta,
+			Spec:       expectedSpec,
+			Status:     c.Status,
+		}
 
-	// Do not modify informer copy.
-	expectedC := &kafkainternals.Consumer{
-		TypeMeta:   c.TypeMeta,
-		ObjectMeta: c.ObjectMeta,
-		Spec:       expectedSpec,
-		Status:     c.Status,
-	}
-
-	// Update existing Consumer.
-	if _, err := r.InternalsClient.Consumers(cg.GetNamespace()).Update(ctx, expectedC, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("failed to update consumer %s/%s: %w", c.GetNamespace(), c.GetName(), err)
+		// Update existing Consumer.
+		if _, err := r.InternalsClient.Consumers(cg.GetNamespace()).Update(ctx, expectedC, metav1.UpdateOptions{}); err != nil {
+			return fmt.Errorf("failed to update consumer %s/%s: %w", c.GetNamespace(), c.GetName(), err)
+		}
 	}
 
 	return nil
 }
 
-func (r *Reconciler) createConsumer(ctx context.Context, cg *kafkainternals.ConsumerGroup, placement eventingduckv1alpha1.Placement) error {
+func (r *Reconciler) createConsumerWithVReplicas(ctx context.Context, cg *kafkainternals.ConsumerGroup, placement eventingduckv1alpha1.Placement, vreplicas int32) error {
 	c := cg.ConsumerFromTemplate()
 
 	c.Name = r.NameGenerator.GenerateName(cg.GetName() + "-")
-	c.Spec.VReplicas = pointer.Int32(placement.VReplicas)
+	c.Spec.VReplicas = pointer.Int32(vreplicas)
 	c.Spec.PodBind = &kafkainternals.PodBind{PodName: placement.PodName, PodNamespace: r.SystemNamespace}
 
 	if _, err := r.InternalsClient.Consumers(cg.GetNamespace()).Create(ctx, c, metav1.CreateOptions{}); err != nil {

@@ -262,6 +262,10 @@ public abstract class AbstractDataPlaneTest {
                                     // write event to the response, the event will be handled by service 2
                                     VertxMessageFactory.createWriter(request.response())
                                             .writeBinary(expectedResponseEventService2);
+                                } else {
+                                    // always complete the response, otherwise the dispatcher waits for it until
+                                    // the HTTP client timeout expires and teardown hangs.
+                                    request.response().end();
                                 }
                             }
 

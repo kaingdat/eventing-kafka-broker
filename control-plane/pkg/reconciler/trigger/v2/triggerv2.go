@@ -19,6 +19,7 @@ package v2
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"go.uber.org/zap"
@@ -28,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
+	"k8s.io/utils/pointer"
 	eventingduck "knative.dev/eventing/pkg/apis/duck/v1"
 	eventing "knative.dev/eventing/pkg/apis/eventing/v1"
 	"knative.dev/eventing/pkg/apis/feature"
@@ -54,7 +56,8 @@ import (
 )
 
 const (
-	deliveryOrderAnnotation = "kafka.eventing.knative.dev/delivery.order"
+	deliveryOrderAnnotation   = "kafka.eventing.knative.dev/delivery.order"
+	triggerVReplicaAnnotation = "kafka.eventing.knative.dev/vreplica"
 )
 
 type Reconciler struct {
@@ -67,6 +70,7 @@ type Reconciler struct {
 	InternalsClient      internalsclient.Interface
 	SecretLister         corelisters.SecretLister
 	KubeClient           kubernetes.Interface
+	KafkaFeatureFlags    *apisconfig.KafkaFeatureFlags
 }
 
 func (r *Reconciler) ReconcileKind(ctx context.Context, trigger *eventing.Trigger) reconciler.Event {
@@ -148,6 +152,16 @@ func (r *Reconciler) reconcileConsumerGroup(ctx context.Context, broker *eventin
 		}
 	}
 
+	var vReplicas *int32
+	if r.KafkaFeatureFlags.IsDispatcherRateLimiterEnabled() {
+		if triggerVReplicaAnnotationValue, ok := trigger.Annotations[triggerVReplicaAnnotation]; ok {
+			if vreplicas, err := strconv.Atoi(triggerVReplicaAnnotationValue); err == nil && vreplicas > 0 {
+				vReplicasInt32 := int32(vreplicas)
+				vReplicas = &vReplicasInt32
+			}
+		}
+	}
+
 	offset := sources.OffsetLatest
 	isLatestOffset, err := kafka.IsOffsetLatest(r.ConfigMapLister, r.Env.DataPlaneConfigMapNamespace, r.Env.DataPlaneConfigConfigMapName, brokerreconciler.ConsumerConfigKey)
 	if err != nil {
@@ -204,6 +218,7 @@ func (r *Reconciler) reconcileConsumerGroup(ctx context.Context, broker *eventin
 			},
 		},
 		Spec: internalscg.ConsumerGroupSpec{
+			Replicas: vReplicas,
 			TopLevelResourceRef: &corev1.ObjectReference{
 				APIVersion: eventing.SchemeGroupVersion.String(),
 				Kind:       "Broker",
@@ -262,6 +277,8 @@ func (r *Reconciler) reconcileConsumerGroup(ctx context.Context, broker *eventin
 		return nil, err
 	}
 	if apierrors.IsNotFound(err) {
+		// Set default replicas to 1 when creating new consumer group
+		expectedCg.Spec.Replicas = pointer.Int32(1)
 		cg, err := r.InternalsClient.InternalV1alpha1().ConsumerGroups(expectedCg.GetNamespace()).Create(ctx, expectedCg, metav1.CreateOptions{})
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return nil, fmt.Errorf("failed to create consumer group %s/%s: %w", expectedCg.GetNamespace(), expectedCg.GetName(), err)

@@ -78,13 +78,6 @@ func NewController(ctx context.Context, watcher configmap.Watcher, configs *conf
 	})
 	coreFeatureStore.WatchConfigs(watcher)
 
-	kafkaFeatureStore := apisconfig.NewStore(ctx, func(_ string, _ *apisconfig.KafkaFeatureFlags) {
-		if globalResync != nil {
-			globalResync()
-		}
-	})
-	kafkaFeatureStore.WatchConfigs(watcher)
-
 	reconciler := &Reconciler{
 		BrokerLister:         brokerInformer.Lister(),
 		ConfigMapLister:      configmapinformer.Get(ctx).Lister(),
@@ -95,7 +88,16 @@ func NewController(ctx context.Context, watcher configmap.Watcher, configs *conf
 		InternalsClient:      consumergroupclient.Get(ctx),
 		SecretLister:         secretinformer.Get(ctx).Lister(),
 		KubeClient:           kubeclient.Get(ctx),
+		KafkaFeatureFlags:    apisconfig.DefaultFeaturesConfig(),
 	}
+
+	kafkaFeatureStore := apisconfig.NewStore(ctx, func(_ string, flags *apisconfig.KafkaFeatureFlags) {
+		reconciler.KafkaFeatureFlags.Reset(flags)
+		if globalResync != nil {
+			globalResync()
+		}
+	})
+	kafkaFeatureStore.WatchConfigs(watcher)
 
 	impl := triggerreconciler.NewImpl(ctx, reconciler, func(impl *controller.Impl) controller.Options {
 		return controller.Options{

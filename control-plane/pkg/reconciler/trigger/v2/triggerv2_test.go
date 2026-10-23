@@ -29,6 +29,7 @@ import (
 	sources "knative.dev/eventing-kafka-broker/control-plane/pkg/apis/sources/v1"
 	"knative.dev/eventing-kafka-broker/control-plane/pkg/kafka"
 
+	apisconfig "knative.dev/eventing-kafka-broker/control-plane/pkg/apis/config"
 	internalscg "knative.dev/eventing-kafka-broker/control-plane/pkg/apis/internalskafkaeventing/v1alpha1"
 	"knative.dev/eventing-kafka-broker/control-plane/pkg/config"
 	"knative.dev/eventing-kafka-broker/control-plane/pkg/reconciler/base"
@@ -126,6 +127,7 @@ func TestReconcileKind(t *testing.T) {
 						ConsumerFilters(NewConsumerSpecFilters()),
 						ConsumerReply(ConsumerTopicReply()),
 					)),
+					ConsumerGroupReplicas(1),
 					withBrokerTopLevelResourceRef(),
 				),
 			},
@@ -188,6 +190,7 @@ func TestReconcileKind(t *testing.T) {
 						ConsumerFilters(NewConsumerSpecFilters()),
 						ConsumerReply(ConsumerTopicReply()),
 					)),
+					ConsumerGroupReplicas(1),
 					withBrokerTopLevelResourceRef(),
 				),
 			},
@@ -243,6 +246,7 @@ func TestReconcileKind(t *testing.T) {
 						ConsumerFilters(NewConsumerSpecFilters()),
 						ConsumerReply(ConsumerTopicReply()),
 					)),
+					ConsumerGroupReplicas(1),
 					withBrokerTopLevelResourceRef(),
 				),
 			},
@@ -299,6 +303,7 @@ func TestReconcileKind(t *testing.T) {
 						ConsumerFilters(NewConsumerSpecFilters()),
 						ConsumerReply(ConsumerTopicReply()),
 					)),
+					ConsumerGroupReplicas(1),
 					withBrokerTopLevelResourceRef(),
 				),
 			},
@@ -1116,6 +1121,7 @@ func TestReconcileKind(t *testing.T) {
 			InternalsClient:      fakeconsumergroupinformer.Get(ctx),
 			SecretLister:         listers.GetSecretLister(),
 			KubeClient:           kubeclient.Get(ctx),
+			KafkaFeatureFlags:    apisconfig.DefaultFeaturesConfig(),
 		}
 
 		return triggerreconciler.NewReconciler(

@@ -161,6 +161,15 @@ func WithAutoscalingAnnotationsSubscription() subscriptionv1.SubscriptionOption 
 	}
 }
 
+func WithSubscriptionVReplicaAnnotation(vreplicas string) subscriptionv1.SubscriptionOption {
+	return func(s *v1.Subscription) {
+		if s.Annotations == nil {
+			s.Annotations = make(map[string]string)
+		}
+		s.Annotations["kafka.eventing.knative.dev/vreplica"] = vreplicas
+	}
+}
+
 func ChannelReceiverPod(namespace string, annotations map[string]string) runtime.Object {
 	return &corev1.Pod{
 		TypeMeta: metav1.TypeMeta{

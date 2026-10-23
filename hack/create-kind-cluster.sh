@@ -20,8 +20,8 @@ set -o nounset
 set -o pipefail
 
 CLUSTER_SUFFIX=${CLUSTER_SUFFIX:-"cluster.local"}
-NODE_VERSION=${NODE_VERSION:-"v1.34.4"}
-NODE_SHA=${NODE_SHA:-"sha256:08497ee19eace7b4b5348db5c6a1591d7752b164530a36f855cb0f2bdcbadd48"}
+NODE_VERSION=${NODE_VERSION:-"v1.35.5"}
+NODE_SHA=${NODE_SHA:-"sha256:ce977ae6d65918d0b58a5f8b5e940429c2ce42fa3a5619ec2bbc60b949c0ac95"}
 REGISTRY_NAME=${REGISTRY_NAME:-"kind-registry"}
 REGISTRY_PORT=${REGISTRY_PORT:-"5001"}
 
@@ -36,10 +36,12 @@ cat <<EOF | kind create cluster --config=-
 apiVersion: kind.x-k8s.io/v1alpha4
 kind: Cluster
 
+# containerd 2.x rejects registry.mirrors alongside config_path, so the
+# local registry is configured through hosts.toml after the nodes are up.
 containerdConfigPatches:
 - |-
-  [plugins."io.containerd.grpc.v1.cri".registry.mirrors."localhost:${REGISTRY_PORT}"]
-    endpoint = ["http://${REGISTRY_NAME}:5000"]
+  [plugins."io.containerd.grpc.v1.cri".registry]
+    config_path = "/etc/containerd/certs.d"
 
 # This is needed in order to support projected volumes with service account tokens.
 # See: https://kubernetes.slack.com/archives/CEKK1KTN2/p1600268272383600
@@ -58,6 +60,15 @@ nodes:
 - role: worker
   image: kindest/node:${NODE_VERSION}@${NODE_SHA}
 EOF
+
+# point localhost:${REGISTRY_PORT} at the registry container on every node
+REGISTRY_DIR="/etc/containerd/certs.d/localhost:${REGISTRY_PORT}"
+for node in $(kind get nodes); do
+  docker exec "${node}" mkdir -p "${REGISTRY_DIR}"
+  cat <<EOF | docker exec -i "${node}" cp /dev/stdin "${REGISTRY_DIR}/hosts.toml"
+[host."http://${REGISTRY_NAME}:5000"]
+EOF
+done
 
 # connect the registry to the cluster network if not already connected
 if [ "$(docker inspect -f='{{json .NetworkSettings.Networks.kind}}' "${REGISTRY_NAME}")" = 'null' ]; then

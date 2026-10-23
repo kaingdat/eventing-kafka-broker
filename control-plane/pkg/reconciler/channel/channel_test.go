@@ -511,6 +511,7 @@ func TestReconcileKind(t *testing.T) {
 						ConsumerSubscriber(NewConsumerSpecSubscriber(Subscription1URI)),
 						ConsumerReply(ConsumerURLReply(apis.HTTP(Subscription1ReplyURI))),
 					)),
+					ConsumerGroupReplicas(1),
 					withChannelTopLevelResourceRef(),
 				),
 			},
@@ -585,6 +586,7 @@ func TestReconcileKind(t *testing.T) {
 						ConsumerSubscriber(NewConsumerSpecSubscriber(Subscription1URI)),
 						ConsumerReply(ConsumerURLReply(apis.HTTP(Subscription1ReplyURI))),
 					)),
+					ConsumerGroupReplicas(1),
 					withChannelTopLevelResourceRef(),
 				),
 			},
@@ -660,6 +662,7 @@ func TestReconcileKind(t *testing.T) {
 						ConsumerSubscriber(NewConsumerSpecSubscriber(Subscription1URI)),
 						ConsumerReply(ConsumerURLReply(apis.HTTP(Subscription1ReplyURI))),
 					)),
+					ConsumerGroupReplicas(1),
 					withChannelTopLevelResourceRef(),
 				),
 			},
@@ -897,6 +900,7 @@ func TestReconcileKind(t *testing.T) {
 						ConsumerSubscriber(NewConsumerSpecSubscriber(Subscription1URI)),
 						ConsumerReply(ConsumerURLReply(apis.HTTP(Subscription1ReplyURI))),
 					)),
+					ConsumerGroupReplicas(1),
 					withChannelTopLevelResourceRef(),
 				),
 				NewConsumerGroup(
@@ -915,6 +919,7 @@ func TestReconcileKind(t *testing.T) {
 						ConsumerSubscriber(NewConsumerSpecSubscriber(Subscription2URI)),
 						ConsumerReply(ConsumerNoReply()),
 					)),
+					ConsumerGroupReplicas(1),
 					withChannelTopLevelResourceRef(),
 				),
 			},
@@ -1009,6 +1014,7 @@ func TestReconcileKind(t *testing.T) {
 						ConsumerSubscriber(NewConsumerSpecSubscriber(Subscription1URI)),
 						ConsumerReply(ConsumerURLReply(apis.HTTP(Subscription1ReplyURI))),
 					)),
+					ConsumerGroupReplicas(1),
 					withChannelTopLevelResourceRef(),
 				),
 			},
@@ -1574,6 +1580,387 @@ func TestReconcileKind(t *testing.T) {
 						ConsumerSubscriber(NewConsumerSpecSubscriber(Subscription1URI)),
 						ConsumerReply(ConsumerURLReply(apis.HTTP(Subscription1ReplyURI))),
 					)),
+					ConsumerGroupReplicas(1),
+					withChannelTopLevelResourceRef(),
+				),
+			},
+			WantUpdates: []clientgotesting.UpdateActionImpl{
+				ConfigMapUpdate(env.DataPlaneConfigMapNamespace, env.ContractConfigMapName, env.ContractConfigMapFormat, &contract.Contract{
+					Generation: 1,
+					Resources: []*contract.Resource{
+						{
+							Uid:              ChannelUUID,
+							Topics:           []string{ChannelTopic()},
+							BootstrapServers: ChannelBootstrapServers,
+							Reference:        ChannelReference(),
+							Ingress: &contract.Ingress{
+								Host: receiver.Host(ChannelNamespace, ChannelName),
+								Path: receiver.Path(ChannelNamespace, ChannelName),
+							},
+							FeatureFlags: FeatureFlagsETAutocreate(false),
+						},
+					},
+				}),
+			},
+			SkipNamespaceValidation: true, // WantCreates compare the channel namespace with configmap namespace, so skip it
+			WantStatusUpdates: []clientgotesting.UpdateActionImpl{
+				{
+					Object: NewChannel(
+						WithInitKafkaChannelConditions,
+						StatusConfigParsed,
+						StatusConfigMapUpdatedReady(&env),
+						WithChannelTopicStatusAnnotation(ChannelTopic()),
+						StatusTopicReadyWithName(ChannelTopic()),
+						ChannelAddressable(&env),
+						StatusProbeSucceeded,
+						WithSubscribers(Subscriber1(WithUnknownSubscriber)),
+						StatusChannelSubscribersUnknown(),
+						WithChannelEventPoliciesReadyBecauseOIDCDisabled(),
+					),
+				},
+			},
+			WantPatches: []clientgotesting.PatchActionImpl{
+				patchFinalizers(),
+			},
+			WantEvents: []string{
+				finalizerUpdatedEvent,
+			},
+		},
+		{
+			Name: "Channel reconciliation with vreplica annotation - rate limiter enabled",
+			Objects: []runtime.Object{
+				NewChannel(
+					WithSubscribers(Subscriber1(WithFreshSubscriber)),
+				),
+				NewConfigMapWithTextData(env.SystemNamespace, DefaultEnv.GeneralConfigMapName, map[string]string{
+					kafka.BootstrapServersConfigMapKey: ChannelBootstrapServers,
+				}),
+				NewConfigMapWithBinaryData(env.DataPlaneConfigMapNamespace, env.ContractConfigMapName, nil),
+				reconcilertesting.NewSubscription(Subscription1Name, ChannelNamespace,
+					reconcilertesting.WithSubscriptionUID(Subscription1UUID),
+					WithAutoscalingAnnotationsSubscription(),
+					WithSubscriptionVReplicaAnnotation("3"),
+				),
+				NewConsumerGroup(
+					WithConsumerGroupName(Subscription1UUID),
+					WithConsumerGroupNamespace(ChannelNamespace),
+					WithConsumerGroupOwnerRef(kmeta.NewControllerRef(NewChannel())),
+					WithConsumerGroupMetaLabels(OwnerAsChannelLabel),
+					WithConsumerGroupLabels(ConsumerSubscription1Label),
+					WithConsumerGroupAnnotations(ConsumerGroupAnnotations),
+					ConsumerGroupConsumerSpec(NewConsumerSpec(
+						ConsumerTopics(ChannelTopic()),
+						ConsumerConfigs(
+							ConsumerGroupIDConfig(consumerGroup(NewChannel(), GetSubscriberSpec(Subscriber1(WithFreshSubscriber)))),
+							ConsumerBootstrapServersConfig(ChannelBootstrapServers),
+						),
+						ConsumerDelivery(NewConsumerSpecDelivery(kafkasource.Ordered)),
+						ConsumerSubscriber(NewConsumerSpecSubscriber(Subscription1URI)),
+						ConsumerReply(ConsumerURLReply(apis.HTTP(Subscription1ReplyURI))),
+					)),
+					ConsumerGroupReplicas(1),
+					ConsumerGroupReady,
+					withChannelTopLevelResourceRef(),
+				),
+			},
+			Key: testKey,
+			OtherTestData: map[string]interface{}{
+				kafkaFeatureFlags: newKafkaFeaturesConfigFromMap(&corev1.ConfigMap{
+					Data: map[string]string{
+						"dispatcher.rate-limiter": "enabled",
+					},
+				}),
+			},
+			WantCreates: []runtime.Object{
+				NewPerChannelService(&env),
+			},
+			WantUpdates: []clientgotesting.UpdateActionImpl{
+				ConfigMapUpdate(env.DataPlaneConfigMapNamespace, env.ContractConfigMapName, env.ContractConfigMapFormat, &contract.Contract{
+					Generation: 1,
+					Resources: []*contract.Resource{
+						{
+							Uid:              ChannelUUID,
+							Topics:           []string{ChannelTopic()},
+							BootstrapServers: ChannelBootstrapServers,
+							Reference:        ChannelReference(),
+							Ingress: &contract.Ingress{
+								Host: receiver.Host(ChannelNamespace, ChannelName),
+								Path: receiver.Path(ChannelNamespace, ChannelName),
+							},
+							FeatureFlags: FeatureFlagsETAutocreate(false),
+						},
+					},
+				}),
+				{
+					Object: NewConsumerGroup(
+						WithConsumerGroupName(Subscription1UUID),
+						WithConsumerGroupNamespace(ChannelNamespace),
+						WithConsumerGroupOwnerRef(kmeta.NewControllerRef(NewChannel())),
+						WithConsumerGroupMetaLabels(OwnerAsChannelLabel),
+						WithConsumerGroupLabels(ConsumerSubscription1Label),
+						WithConsumerGroupAnnotations(ConsumerGroupAnnotations),
+						ConsumerGroupConsumerSpec(NewConsumerSpec(
+							ConsumerTopics(ChannelTopic()),
+							ConsumerConfigs(
+								ConsumerGroupIDConfig(consumerGroup(NewChannel(), GetSubscriberSpec(Subscriber1(WithFreshSubscriber)))),
+								ConsumerBootstrapServersConfig(ChannelBootstrapServers),
+							),
+							ConsumerDelivery(NewConsumerSpecDelivery(kafkasource.Ordered)),
+							ConsumerSubscriber(NewConsumerSpecSubscriber(Subscription1URI)),
+							ConsumerReply(ConsumerURLReply(apis.HTTP(Subscription1ReplyURI))),
+						)),
+						ConsumerGroupReplicas(3),
+						ConsumerGroupReady,
+						withChannelTopLevelResourceRef(),
+					),
+				},
+			},
+			SkipNamespaceValidation: true, // WantCreates compare the channel namespace with configmap namespace, so skip it
+			WantStatusUpdates: []clientgotesting.UpdateActionImpl{
+				{
+					Object: NewChannel(
+						WithInitKafkaChannelConditions,
+						StatusConfigParsed,
+						StatusConfigMapUpdatedReady(&env),
+						WithChannelTopicStatusAnnotation(ChannelTopic()),
+						StatusTopicReadyWithName(ChannelTopic()),
+						ChannelAddressable(&env),
+						StatusProbeSucceeded,
+						WithSubscribers(Subscriber1(WithFreshSubscriber)),
+						StatusChannelSubscribers(),
+						WithChannelEventPoliciesReadyBecauseOIDCDisabled(),
+					),
+				},
+			},
+			WantPatches: []clientgotesting.PatchActionImpl{
+				patchFinalizers(),
+			},
+			WantEvents: []string{
+				finalizerUpdatedEvent,
+			},
+		},
+		{
+			Name: "Channel reconciliation with vreplica annotation - rate limiter disabled",
+			Objects: []runtime.Object{
+				NewChannel(
+					WithSubscribers(Subscriber1(WithFreshSubscriber)),
+				),
+				NewConfigMapWithTextData(env.SystemNamespace, DefaultEnv.GeneralConfigMapName, map[string]string{
+					kafka.BootstrapServersConfigMapKey: ChannelBootstrapServers,
+				}),
+				NewConfigMapWithBinaryData(env.DataPlaneConfigMapNamespace, env.ContractConfigMapName, nil),
+				reconcilertesting.NewSubscription(Subscription1Name, ChannelNamespace,
+					reconcilertesting.WithSubscriptionUID(Subscription1UUID),
+					WithAutoscalingAnnotationsSubscription(),
+					WithSubscriptionVReplicaAnnotation("3"),
+				),
+			},
+			Key: testKey,
+			OtherTestData: map[string]interface{}{
+				kafkaFeatureFlags: newKafkaFeaturesConfigFromMap(&corev1.ConfigMap{
+					Data: map[string]string{
+						"dispatcher.rate-limiter": "disabled",
+					},
+				}),
+			},
+			WantCreates: []runtime.Object{
+				NewPerChannelService(&env),
+				NewConsumerGroup(
+					WithConsumerGroupName(Subscription1UUID),
+					WithConsumerGroupNamespace(ChannelNamespace),
+					WithConsumerGroupOwnerRef(kmeta.NewControllerRef(NewChannel())),
+					WithConsumerGroupMetaLabels(OwnerAsChannelLabel),
+					WithConsumerGroupLabels(ConsumerSubscription1Label),
+					WithConsumerGroupAnnotations(ConsumerGroupAnnotations),
+					ConsumerGroupConsumerSpec(NewConsumerSpec(
+						ConsumerTopics(ChannelTopic()),
+						ConsumerConfigs(
+							ConsumerGroupIDConfig(consumerGroup(NewChannel(), GetSubscriberSpec(Subscriber1(WithFreshSubscriber)))),
+							ConsumerBootstrapServersConfig(ChannelBootstrapServers),
+						),
+						ConsumerDelivery(NewConsumerSpecDelivery(kafkasource.Ordered)),
+						ConsumerSubscriber(NewConsumerSpecSubscriber(Subscription1URI)),
+						ConsumerReply(ConsumerURLReply(apis.HTTP(Subscription1ReplyURI))),
+					)),
+					ConsumerGroupReplicas(1),
+					withChannelTopLevelResourceRef(),
+				),
+			},
+			WantUpdates: []clientgotesting.UpdateActionImpl{
+				ConfigMapUpdate(env.DataPlaneConfigMapNamespace, env.ContractConfigMapName, env.ContractConfigMapFormat, &contract.Contract{
+					Generation: 1,
+					Resources: []*contract.Resource{
+						{
+							Uid:              ChannelUUID,
+							Topics:           []string{ChannelTopic()},
+							BootstrapServers: ChannelBootstrapServers,
+							Reference:        ChannelReference(),
+							Ingress: &contract.Ingress{
+								Host: receiver.Host(ChannelNamespace, ChannelName),
+								Path: receiver.Path(ChannelNamespace, ChannelName),
+							},
+							FeatureFlags: FeatureFlagsETAutocreate(false),
+						},
+					},
+				}),
+			},
+			SkipNamespaceValidation: true, // WantCreates compare the channel namespace with configmap namespace, so skip it
+			WantStatusUpdates: []clientgotesting.UpdateActionImpl{
+				{
+					Object: NewChannel(
+						WithInitKafkaChannelConditions,
+						StatusConfigParsed,
+						StatusConfigMapUpdatedReady(&env),
+						WithChannelTopicStatusAnnotation(ChannelTopic()),
+						StatusTopicReadyWithName(ChannelTopic()),
+						ChannelAddressable(&env),
+						StatusProbeSucceeded,
+						WithSubscribers(Subscriber1(WithUnknownSubscriber)),
+						StatusChannelSubscribersUnknown(),
+						WithChannelEventPoliciesReadyBecauseOIDCDisabled(),
+					),
+				},
+			},
+			WantPatches: []clientgotesting.PatchActionImpl{
+				patchFinalizers(),
+			},
+			WantEvents: []string{
+				finalizerUpdatedEvent,
+			},
+		},
+		{
+			Name: "Channel reconciliation with invalid vreplica annotation - rate limiter enabled",
+			Objects: []runtime.Object{
+				NewChannel(
+					WithSubscribers(Subscriber1(WithFreshSubscriber)),
+				),
+				NewConfigMapWithTextData(env.SystemNamespace, DefaultEnv.GeneralConfigMapName, map[string]string{
+					kafka.BootstrapServersConfigMapKey: ChannelBootstrapServers,
+				}),
+				NewConfigMapWithBinaryData(env.DataPlaneConfigMapNamespace, env.ContractConfigMapName, nil),
+				reconcilertesting.NewSubscription(Subscription1Name, ChannelNamespace,
+					reconcilertesting.WithSubscriptionUID(Subscription1UUID),
+					WithAutoscalingAnnotationsSubscription(),
+					WithSubscriptionVReplicaAnnotation("invalid"),
+				),
+			},
+			Key: testKey,
+			OtherTestData: map[string]interface{}{
+				kafkaFeatureFlags: newKafkaFeaturesConfigFromMap(&corev1.ConfigMap{
+					Data: map[string]string{
+						"dispatcher.rate-limiter": "enabled",
+					},
+				}),
+			},
+			WantCreates: []runtime.Object{
+				NewPerChannelService(&env),
+				NewConsumerGroup(
+					WithConsumerGroupName(Subscription1UUID),
+					WithConsumerGroupNamespace(ChannelNamespace),
+					WithConsumerGroupOwnerRef(kmeta.NewControllerRef(NewChannel())),
+					WithConsumerGroupMetaLabels(OwnerAsChannelLabel),
+					WithConsumerGroupLabels(ConsumerSubscription1Label),
+					WithConsumerGroupAnnotations(ConsumerGroupAnnotations),
+					ConsumerGroupConsumerSpec(NewConsumerSpec(
+						ConsumerTopics(ChannelTopic()),
+						ConsumerConfigs(
+							ConsumerGroupIDConfig(consumerGroup(NewChannel(), GetSubscriberSpec(Subscriber1(WithFreshSubscriber)))),
+							ConsumerBootstrapServersConfig(ChannelBootstrapServers),
+						),
+						ConsumerDelivery(NewConsumerSpecDelivery(kafkasource.Ordered)),
+						ConsumerSubscriber(NewConsumerSpecSubscriber(Subscription1URI)),
+						ConsumerReply(ConsumerURLReply(apis.HTTP(Subscription1ReplyURI))),
+					)),
+					ConsumerGroupReplicas(1),
+					withChannelTopLevelResourceRef(),
+				),
+			},
+			WantUpdates: []clientgotesting.UpdateActionImpl{
+				ConfigMapUpdate(env.DataPlaneConfigMapNamespace, env.ContractConfigMapName, env.ContractConfigMapFormat, &contract.Contract{
+					Generation: 1,
+					Resources: []*contract.Resource{
+						{
+							Uid:              ChannelUUID,
+							Topics:           []string{ChannelTopic()},
+							BootstrapServers: ChannelBootstrapServers,
+							Reference:        ChannelReference(),
+							Ingress: &contract.Ingress{
+								Host: receiver.Host(ChannelNamespace, ChannelName),
+								Path: receiver.Path(ChannelNamespace, ChannelName),
+							},
+							FeatureFlags: FeatureFlagsETAutocreate(false),
+						},
+					},
+				}),
+			},
+			SkipNamespaceValidation: true, // WantCreates compare the channel namespace with configmap namespace, so skip it
+			WantStatusUpdates: []clientgotesting.UpdateActionImpl{
+				{
+					Object: NewChannel(
+						WithInitKafkaChannelConditions,
+						StatusConfigParsed,
+						StatusConfigMapUpdatedReady(&env),
+						WithChannelTopicStatusAnnotation(ChannelTopic()),
+						StatusTopicReadyWithName(ChannelTopic()),
+						ChannelAddressable(&env),
+						StatusProbeSucceeded,
+						WithSubscribers(Subscriber1(WithUnknownSubscriber)),
+						StatusChannelSubscribersUnknown(),
+						WithChannelEventPoliciesReadyBecauseOIDCDisabled(),
+					),
+				},
+			},
+			WantPatches: []clientgotesting.PatchActionImpl{
+				patchFinalizers(),
+			},
+			WantEvents: []string{
+				finalizerUpdatedEvent,
+			},
+		},
+		{
+			Name: "Channel reconciliation with zero vreplica annotation - rate limiter enabled",
+			Objects: []runtime.Object{
+				NewChannel(
+					WithSubscribers(Subscriber1(WithFreshSubscriber)),
+				),
+				NewConfigMapWithTextData(env.SystemNamespace, DefaultEnv.GeneralConfigMapName, map[string]string{
+					kafka.BootstrapServersConfigMapKey: ChannelBootstrapServers,
+				}),
+				NewConfigMapWithBinaryData(env.DataPlaneConfigMapNamespace, env.ContractConfigMapName, nil),
+				reconcilertesting.NewSubscription(Subscription1Name, ChannelNamespace,
+					reconcilertesting.WithSubscriptionUID(Subscription1UUID),
+					WithAutoscalingAnnotationsSubscription(),
+					WithSubscriptionVReplicaAnnotation("0"),
+				),
+			},
+			Key: testKey,
+			OtherTestData: map[string]interface{}{
+				kafkaFeatureFlags: newKafkaFeaturesConfigFromMap(&corev1.ConfigMap{
+					Data: map[string]string{
+						"dispatcher.rate-limiter": "enabled",
+					},
+				}),
+			},
+			WantCreates: []runtime.Object{
+				NewPerChannelService(&env),
+				NewConsumerGroup(
+					WithConsumerGroupName(Subscription1UUID),
+					WithConsumerGroupNamespace(ChannelNamespace),
+					WithConsumerGroupOwnerRef(kmeta.NewControllerRef(NewChannel())),
+					WithConsumerGroupMetaLabels(OwnerAsChannelLabel),
+					WithConsumerGroupLabels(ConsumerSubscription1Label),
+					WithConsumerGroupAnnotations(ConsumerGroupAnnotations),
+					ConsumerGroupConsumerSpec(NewConsumerSpec(
+						ConsumerTopics(ChannelTopic()),
+						ConsumerConfigs(
+							ConsumerGroupIDConfig(consumerGroup(NewChannel(), GetSubscriberSpec(Subscriber1(WithFreshSubscriber)))),
+							ConsumerBootstrapServersConfig(ChannelBootstrapServers),
+						),
+						ConsumerDelivery(NewConsumerSpecDelivery(kafkasource.Ordered)),
+						ConsumerSubscriber(NewConsumerSpecSubscriber(Subscription1URI)),
+						ConsumerReply(ConsumerURLReply(apis.HTTP(Subscription1ReplyURI))),
+					)),
+					ConsumerGroupReplicas(1),
 					withChannelTopLevelResourceRef(),
 				),
 			},
